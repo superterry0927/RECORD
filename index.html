@@ -26,16 +26,16 @@
     // ==========================================
     // ⚠️ 部署至 GITHUB 時，請替換為您的 Firebase 金鑰
     // ==========================================
-   // For Firebase JS SDK v7.20.0 and later, measurementId is optional
-const firebaseConfig = {
-  apiKey: "AIzaSyCI5EEHWFu8ieRvavgHITadwgDkwNmAXdc",
-  authDomain: "record-1c6ea.firebaseapp.com",
-  projectId: "record-1c6ea",
-  storageBucket: "record-1c6ea.firebasestorage.app",
-  messagingSenderId: "769328388649",
-  appId: "1:769328388649:web:bd8741096ee47660295a38",
-  measurementId: "G-2F0TF0R5CP"
-};
+    // 將原本的 firebaseConfig 改名為 userFirebaseConfig，避免重複宣告
+    const userFirebaseConfig = {
+      apiKey: "AIzaSyCI5EEHWFu8ieRvavgHITadwgDkwNmAXdc",
+      authDomain: "record-1c6ea.firebaseapp.com",
+      projectId: "record-1c6ea",
+      storageBucket: "record-1c6ea.firebasestorage.app",
+      messagingSenderId: "769328388649",
+      appId: "1:769328388649:web:bd8741096ee47660295a38",
+      measurementId: "G-2F0TF0R5CP"
+    };
 
     // 自動偵測環境：如果是本機測試平台就用環境變數，若是 GitHub 則使用上方設定
     const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : userFirebaseConfig;
