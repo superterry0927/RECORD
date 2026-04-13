@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>多人線上評分系統</title>
+  
+  <!-- 引入 Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- 引入 Babel 以在瀏覽器中編譯 JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- 使用 Babel 處理模組化的 React 與 Firebase 程式碼 -->
+  <script type="text/babel" data-type="module">
+    import React, { useState, useEffect, useMemo } from 'https://esm.sh/react@18.2.0';
+    import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+    import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+    import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, deleteDoc } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+    import { ChevronLeft, ChevronRight, CheckCircle, LogOut, Download, Plus, Upload, Users, ClipboardList, UserPlus, Trash2 } from 'https://esm.sh/lucide-react@0.292.0';
+
+    // ==========================================
+    // ⚠️ 部署至 GITHUB 時，請替換為您的 Firebase 金鑰
+    // ==========================================
+   // For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
+  apiKey: "AIzaSyCI5EEHWFu8ieRvavgHITadwgDkwNmAXdc",
+  authDomain: "record-1c6ea.firebaseapp.com",
+  projectId: "record-1c6ea",
+  storageBucket: "record-1c6ea.firebasestorage.app",
+  messagingSenderId: "769328388649",
+  appId: "1:769328388649:web:bd8741096ee47660295a38",
+  measurementId: "G-2F0TF0R5CP"
+};
+
+    // 自動偵測環境：如果是本機測試平台就用環境變數，若是 GitHub 則使用上方設定
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : userFirebaseConfig;
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'github-scoring-app';
+
+    // --- Firebase 初始化 ---
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // ==========================================
+    // 主應用程式元件
+    // ==========================================
+    function App() {
+      const [user, setUser] = useState(null);
+      const [currentRoute, setCurrentRoute] = useState('home'); // home, admin-login, admin-dashboard, judge-login, judge-scoring
+      
+      // Firestore 資料
+      const [projects, setProjects] = useState([]);
+      const [contestants, setContestants] = useState([]);
+      const [submissions, setSubmissions] = useState([]);
+      const [judges, setJudges] = useState([]); 
+      
+      // 狀態管理
+      const [selectedProject, setSelectedProject] = useState(null);
+      const [currentJudge, setCurrentJudge] = useState(null);
+      const [loading, setLoading] = useState(true);
+
+      // 初始化登入
+      useEffect(() => {
+        const initAuth = async () => {
+          try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+              await signInAnonymously(auth);
+            }
+          } catch (err) {
+            console.error("登入失敗:", err);
+            // 防呆：若未設定正確的 Firebase Config，在此提示
+            if (err.code === 'auth/invalid-api-key' || err.code === 'auth/operation-not-allowed') {
+              console.warn("尚未設定 Firebase 或未開啟匿名登入。");
+            }
+          }
+        };
+        initAuth();
+
+        const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+          setUser(currentUser);
+          setLoading(false);
+        });
+        return () => unsubscribe();
+      }, []);
+
+      // 訂閱 Firestore 資料
+      useEffect(() => {
+        if (!user) return;
+        
+        const publicPath = `artifacts/${appId}/public/data`;
+        
+        const unsubProjects = onSnapshot(collection(db, publicPath, 'projects'), 
+          (snap) => setProjects(snap.docs.map(d => ({ id: d.id, ...d.data() }))), 
+          (err) => console.error(err)
+        );
+        
+        const unsubContestants = onSnapshot(collection(db, publicPath, 'contestants'), 
+          (snap) => setContestants(snap.docs.map(d => ({ id: d.id, ...d.data() }))), 
+          (err) => console.error(err)
+        );
+        
+        const unsubSubmissions = onSnapshot(collection(db, publicPath, 'submissions'), 
+          (snap) => setSubmissions(snap.docs.map(d => ({ id: d.id, ...d.data() }))), 
+          (err) => console.error(err)
+        );
+
+        const unsubJudges = onSnapshot(collection(db, publicPath, 'judges'), 
+          (snap) => setJudges(snap.docs.map(d => ({ id: d.id, ...d.data() }))), 
+          (err) => console.error(err)
+        );
+
+        return () => {
+          unsubProjects();
+          unsubContestants();
+          unsubSubmissions();
+          unsubJudges();
+        };
+      }, [user]);
+
+      if (loading) {
+        return <div className="min-h-screen flex items-center justify-center bg-gray-50 text-gray-600">系統連線載入中，若長時間無反應請檢查您的 Firebase 金鑰設定...</div>;
+      }
+
+      return (
+        <div className="min-h-screen bg-gray-50 font-sans text-gray-800">
+          <header className="bg-indigo-600 text-white shadow-md">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+              <h1 className="text-xl font-bold flex items-center cursor-pointer" onClick={() => setCurrentRoute('home')}>
+                <ClipboardList className="mr-2" /> 多人線上評分系統
+              </h1>
+              <div>
+                {(currentRoute === 'admin-dashboard' || currentRoute === 'judge-scoring' || currentRoute === 'judge-login') && (
+                  <button 
+                    onClick={() => {
+                      setCurrentRoute('home');
+                      setCurrentJudge(null);
+                      setSelectedProject(null);
+                    }}
+                    className="flex items-center text-indigo-100 hover:text-white transition-colors text-sm"
+                  >
+                    <LogOut className="w-4 h-4 mr-1" /> 回首頁
+                  </button>
+                )}
+              </div>
+            </div>
+          </header>
+
+          <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            {currentRoute === 'home' && (
+              <HomeView 
+                projects={projects} 
+                onSelectProject={(p) => { setSelectedProject(p); setCurrentRoute('judge-login'); }}
+                onAdminClick={() => setCurrentRoute('admin-login')}
+              />
+            )}
+            
+            {currentRoute === 'admin-login' && (
+              <AdminLoginView onLoginSuccess={() => setCurrentRoute('admin-dashboard')} />
+            )}
+            
+            {currentRoute === 'admin-dashboard' && (
+              <AdminDashboard 
+                projects={projects} 
+                contestants={contestants}
+                submissions={submissions}
+                judges={judges}
+                appId={appId}
+                db={db}
+              />
+            )}
+
+            {currentRoute === 'judge-login' && selectedProject && (
+              <JudgeLoginView 
+                project={selectedProject}
+                judges={judges}
+                onLogin={(judge) => {
+                  setCurrentJudge(judge);
+                  setCurrentRoute('judge-scoring');
+                }}
+              />
+            )}
+
+            {currentRoute === 'judge-scoring' && selectedProject && currentJudge && (
+              <ScoringView 
+                project={selectedProject}
+                judge={currentJudge}
+                contestants={contestants.filter(c => c.projectId === selectedProject.id)}
+                submissions={submissions}
+                appId={appId}
+                db={db}
+                onComplete={() => setCurrentRoute('home')}
+              />
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    // ==========================================
+    // 首頁視圖
+    // ==========================================
+    function HomeView({ projects, onSelectProject, onAdminClick }) {
+      const sortedProjects = [...projects].sort((a, b) => b.createdAt - a.createdAt);
+
+      return (
+        <div className="space-y-8 animate-fade-in">
+          <div className="text-center">
+            <h2 className="text-3xl font-extrabold text-gray-900 tracking-tight">請選擇正在進行評分的項目</h2>
+            <p className="mt-4 text-lg text-gray-500">點擊下方項目卡片進入評審登入畫面</p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 mt-8">
+            {sortedProjects.length === 0 ? (
+              <div className="col-span-full text-center py-12 text-gray-400 border-2 border-dashed border-gray-200 rounded-xl">
+                目前沒有開放評分的項目。
+              </div>
+            ) : (
+              sortedProjects.map((project) => (
+                <div 
+                  key={project.id} 
+                  onClick={() => onSelectProject(project)}
+                  className="bg-white overflow-hidden shadow-sm hover:shadow-md rounded-xl border border-gray-100 cursor-pointer transition-all transform hover:-translate-y-1"
+                >
+                  <div className="p-6">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xl font-bold text-gray-900 truncate">{project.title}</h3>
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${project.isOpen !== false ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                        {project.isOpen !== false ? '進行中' : '已關閉'}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm text-gray-500">
+                      建立日期: {new Date(project.createdAt).toLocaleDateString('zh-TW')}
+                    </p>
+                    <div className="mt-4 flex items-center text-indigo-600 text-sm font-medium">
+                      進入評分 <ChevronRight className="w-4 h-4 ml-1" />
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="flex justify-center mt-16 pt-8 border-t border-gray-200">
+            <button 
+              onClick={onAdminClick}
+              className="text-gray-400 hover:text-indigo-600 font-medium text-sm transition-colors flex items-center"
+            >
+              <Users className="w-4 h-4 mr-1" />
+              管理員登入
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ==========================================
+    // 評審登入視圖
+    // ==========================================
+    function JudgeLoginView({ project, judges, onLogin }) {
+      const [password, setPassword] = useState('');
+      const [error, setError] = useState('');
+
+      const handleLogin = (e) => {
+        e.preventDefault();
+        const judge = judges.find(j => j.password === password);
+        if (judge) {
+          onLogin({ id: judge.id, name: judge.name });
+        } else {
+          setError('密碼錯誤，請重新輸入');
+        }
+      };
+
+      return (
+        <div className="max-w-md mx-auto bg-white p-8 rounded-xl shadow-sm border border-gray-100 animate-fade-in">
+          <h2 className="text-2xl font-bold text-center text-gray-900 mb-2">評審登入</h2>
+          <p className="text-center text-gray-500 mb-6 font-medium">專案：{project.title}</p>
+          
+          {judges.length === 0 ? (
+            <div className="bg-yellow-50 text-yellow-800 p-4 rounded-lg mb-6 text-sm">
+              系統目前沒有任何評審帳號，請聯繫管理員從後台新增。
+            </div>
+          ) : (
+            <div className="bg-blue-50 text-blue-800 p-4 rounded-lg mb-6 text-sm">
+              <p className="font-bold mb-1">系統已啟用動態密碼登入</p>
+              <p>請輸入管理員為您設定的密碼。</p>
+            </div>
+          )}
+
+          <form onSubmit={handleLogin} className="space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">請輸入您的評審密碼</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); setError(''); }}
+                className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all"
+                placeholder="請輸入密碼"
+                autoFocus
+              />
+              {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+            </div>
+            <button
+              type="submit"
+              className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 transition-colors shadow-sm"
+            >
+              登入並開始評分
+            </button>
+          </form>
+        </div>
+      );
+    }
+
+    // ==========================================
+    // 評分主畫面視圖
+    // ==========================================
+    function ScoringView({ project, judge, contestants, submissions, appId, db, onComplete }) {
+      const [currentIndex, setCurrentIndex] = useState(0);
+      const [scores, setScores] = useState({}); 
+      const [isSubmitting, setIsSubmitting] = useState(false);
+      const [errorMsg, setErrorMsg] = useState('');
+
+      const existingSubmission = submissions.find(
+        s => s.projectId === project.id && s.judgeId === judge.id
+      );
+
+      if (existingSubmission) {
+        return (
+          <div className="max-w-2xl mx-auto text-center py-16 animate-fade-in">
+            <CheckCircle className="w-20 h-20 text-green-500 mx-auto mb-6" />
+            <h2 className="text-3xl font-bold text-gray-900 mb-4">您已經完成評分</h2>
+            <p className="text-gray-500 mb-8">感謝您的參與，您在此專案的成績已成功送出且不可修改。</p>
+            <button 
+              onClick={onComplete}
+              className="bg-indigo-600 text-white font-bold py-3 px-8 rounded-lg hover:bg-indigo-700 transition-colors"
+            >
+              返回首頁
+            </button>
+          </div>
+        );
+      }
+
+      if (contestants.length === 0) {
+        return (
+          <div className="text-center py-12 text-gray-500">
+            此專案目前沒有參賽者資料，請聯繫管理員。
+          </div>
+        );
+      }
+
+      const isFinished = currentIndex === contestants.length;
+      const currentContestant = contestants[currentIndex];
+
+      const handleScoreChange = (score) => {
+        setScores(prev => ({
+          ...prev,
+          [currentContestant.id]: score
+        }));
+      };
+
+      const nextPerson = () => {
+        if (currentIndex < contestants.length) {
+          setCurrentIndex(prev => prev + 1);
+        }
+      };
+
+      const prevPerson = () => {
+        if (currentIndex > 0) {
+          setCurrentIndex(prev => prev - 1);
+        }
+      };
+
+      const handleSubmit = async () => {
+        setIsSubmitting(true);
+        setErrorMsg('');
+        try {
+          const publicPath = `artifacts/${appId}/public/data`;
+          const submissionRef = collection(db, publicPath, 'submissions');
+          await addDoc(submissionRef, {
+            projectId: project.id,
+            judgeId: judge.id,
+            judgeName: judge.name,
+            scores: scores,
+            submittedAt: Date.now()
+          });
+        } catch (err) {
+          console.error("提交失敗:", err);
+          setErrorMsg("提交失敗，請檢查網路連線或資料庫權限設定");
+          setIsSubmitting(false);
+        }
+      };
+
+      return (
+        <div className="max-w-3xl mx-auto animate-fade-in">
+          <div className="mb-6 flex justify-between items-end">
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900">{project.title}</h2>
+              <p className="text-indigo-600 font-medium mt-1">評審：{judge.name}</p>
+            </div>
+            <div className="text-sm font-bold text-gray-500 bg-gray-200 px-3 py-1 rounded-full">
+              {isFinished ? '確認送出' : `${currentIndex + 1} / ${contestants.length}`}
+            </div>
+          </div>
+
+          {!isFinished ? (
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+              <div className="p-8 border-b border-gray-100 bg-gradient-to-br from-indigo-50 to-white">
+                <h3 className="text-3xl font-extrabold text-gray-900 text-center mb-6">{currentContestant.姓名}</h3>
+                <div className="grid grid-cols-2 gap-y-4 gap-x-8 text-lg">
+                  <div className="flex flex-col">
+                    <span className="text-sm text-gray-500">班級</span>
+                    <span className="font-semibold text-gray-800">{currentContestant.班級}</span>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-sm text-gray-500">性別</span>
+                    <span className="font-semibold text-gray-800">{currentContestant.性別}</span>
+                  </div>
+                  <div className="flex flex-col col-span-2">
+                    <span className="text-sm text-gray-500">專長與社團</span>
+                    <span className="font-semibold text-gray-800">{currentContestant.專長與社團 || '無'}</span>
+                  </div>
+                  <div className="flex flex-col col-span-2">
+                    <span className="text-sm text-gray-500">有無安親班</span>
+                    <span className="font-semibold text-gray-800">{currentContestant.有無安親班 || '無'}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-8">
+                <h4 className="text-center font-bold text-gray-700 mb-6">請給予評分 (1-10分)</h4>
+                <div className="flex justify-between max-w-xl mx-auto">
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(num => (
+                    <label key={num} className="cursor-pointer group flex flex-col items-center">
+                      <input 
+                        type="radio" 
+                        name={`score-${currentContestant.id}`}
+                        value={num}
+                        checked={scores[currentContestant.id] === num}
+                        onChange={() => handleScoreChange(num)}
+                        className="sr-only" 
+                      />
+                      <div className={`w-10 h-10 flex items-center justify-center rounded-full border-2 transition-all duration-200 ${
+                        scores[currentContestant.id] === num 
+                          ? 'bg-indigo-600 border-indigo-600 text-white font-bold shadow-md transform scale-110' 
+                          : 'border-gray-300 text-gray-500 group-hover:border-indigo-400 group-hover:text-indigo-500'
+                      }`}>
+                        {num}
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-gray-50 p-4 flex justify-between items-center border-t border-gray-200">
+                <button 
+                  onClick={prevPerson}
+                  disabled={currentIndex === 0}
+                  className={`flex items-center px-4 py-2 rounded-lg font-medium transition-colors ${
+                    currentIndex === 0 ? 'text-gray-400 cursor-not-allowed' : 'text-indigo-600 hover:bg-indigo-100'
+                  }`}
+                >
+                  <ChevronLeft className="w-5 h-5 mr-1" /> 上一位
+                </button>
+                <button 
+                  onClick={nextPerson}
+                  className="flex items-center px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700 transition-colors shadow-sm"
+                >
+                  {currentIndex === contestants.length - 1 ? '完成評分' : '下一位'} <ChevronRight className="w-5 h-5 ml-1" />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-10 text-center">
+              <CheckCircle className="w-16 h-16 text-indigo-500 mx-auto mb-4" />
+              <h3 className="text-2xl font-bold text-gray-900 mb-2">確認送出評分？</h3>
+              <p className="text-gray-500 mb-8">
+                您已經完成 {contestants.length} 位參賽者的評分。<br />
+                請注意：<strong>成績一旦送出後，將無法再進行修改。</strong>
+              </p>
+              
+              {errorMsg && (
+                <div className="bg-red-50 text-red-800 p-3 rounded-lg mb-6 text-sm">{errorMsg}</div>
+              )}
+
+              <div className="flex justify-center space-x-4">
+                <button 
+                  onClick={prevPerson}
+                  className="px-6 py-3 border-2 border-gray-300 text-gray-700 font-bold rounded-lg hover:bg-gray-50 transition-colors"
+                >
+                  返回檢查
+                </button>
+                <button 
+                  onClick={handleSubmit}
+                  disabled={isSubmitting}
+                  className={`px-8 py-3 bg-green-600 text-white font-bold rounded-lg transition-colors shadow-sm flex items-center ${
+                    isSubmitting ? 'opacity-70 cursor-not-allowed' : 'hover:bg-green-700'
+                  }`}
+                >
+                  {isSubmitting ? '處理中...' : '確認送出成績'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ==========================================
+    // 管理員登入
+    // ==========================================
+    function AdminLoginView({ onLoginSuccess }) {
+      const [password, setPassword] = useState('');
+      const [error, setError] = useState('');
+
+      const handleLogin = (e) => {
+        e.preventDefault();
+        if (password === 'admin888') {
+          onLoginSuccess();
+        } else {
+          setError('管理員密碼錯誤');
+        }
+      };
+
+      return (
+        <div className="max-w-md mx-auto bg-white p-8 rounded-xl shadow-sm border border-gray-100 mt-10">
+          <div className="flex justify-center mb-4 text-indigo-600">
+            <Users className="w-12 h-12" />
+          </div>
+          <h2 className="text-2xl font-bold text-center text-gray-900 mb-6">管理員後台登入</h2>
+          <form onSubmit={handleLogin} className="space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">請輸入管理員密碼</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); setError(''); }}
+                className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                placeholder="預設密碼為 admin888"
+                autoFocus
+              />
+              {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+            </div>
+            <button
+              type="submit"
+              className="w-full bg-gray-900 text-white font-bold py-3 px-4 rounded-lg hover:bg-gray-800 transition-colors shadow-sm"
+            >
+              登入
+            </button>
+          </form>
+        </div>
+      );
+    }
+
+    // ==========================================
+    // 管理員後台
+    // ==========================================
+    function AdminDashboard({ projects, contestants, submissions, judges, appId, db }) {
+      const [activeTab, setActiveTab] = useState('projects'); 
+      const [selectedProjectId, setSelectedProjectId] = useState(null);
+      
+      const [newProjectTitle, setNewProjectTitle] = useState('');
+      const [csvText, setCsvText] = useState('');
+
+      const [newJudgeName, setNewJudgeName] = useState('');
+      const [newJudgePassword, setNewJudgePassword] = useState('');
+      const [actionMsg, setActionMsg] = useState({ type: '', text: '' }); 
+
+      const sortedProjects = [...projects].sort((a, b) => b.createdAt - a.createdAt);
+      const currentProject = projects.find(p => p.id === selectedProjectId);
+      
+      const projectContestants = contestants.filter(c => c.projectId === selectedProjectId);
+      const projectSubmissions = submissions.filter(s => s.projectId === selectedProjectId);
+
+      const showMessage = (type, text) => {
+        setActionMsg({ type, text });
+        setTimeout(() => setActionMsg({ type: '', text: '' }), 4000);
+      };
+
+      const handleCreateJudge = async () => {
+        if (!newJudgeName.trim() || !newJudgePassword.trim()) {
+          showMessage('error', '請輸入評審姓名與密碼');
+          return;
+        }
+        if (judges.some(j => j.password === newJudgePassword)) {
+          showMessage('error', '此密碼已被使用，請更換一個密碼');
+          return;
+        }
+        
+        const publicPath = `artifacts/${appId}/public/data`;
+        try {
+          await addDoc(collection(db, publicPath, 'judges'), {
+            name: newJudgeName.trim(),
+            password: newJudgePassword.trim(),
+            createdAt: Date.now()
+          });
+          setNewJudgeName('');
+          setNewJudgePassword('');
+          showMessage('success', '評審帳號新增成功！');
+        } catch (err) {
+          console.error(err);
+          showMessage('error', '新增評審失敗，請檢查權限');
+        }
+      };
+
+      const handleDeleteJudge = async (judgeId) => {
+        const publicPath = `artifacts/${appId}/public/data`;
+        try {
+          await deleteDoc(doc(db, publicPath, 'judges', judgeId));
+          showMessage('success', '評審帳號已刪除');
+        } catch (err) {
+          console.error(err);
+          showMessage('error', '刪除失敗');
+        }
+      };
+
+      const handleCreateProject = async () => {
+        if (!newProjectTitle.trim()) {
+          showMessage('error', '請輸入主題名稱');
+          return;
+        }
+        const publicPath = `artifacts/${appId}/public/data`;
+        try {
+          await addDoc(collection(db, publicPath, 'projects'), {
+            title: newProjectTitle.trim(),
+            createdAt: Date.now(),
+            isOpen: true
+          });
+          setNewProjectTitle('');
+          showMessage('success', '評分主題建立成功！');
+        } catch (err) {
+          console.error(err);
+          showMessage('error', '建立失敗');
+        }
+      };
+
+      const handleImportCSV = async () => {
+        if (!csvText.trim()) {
+          showMessage('error', '請貼上 CSV 內容');
+          return;
+        }
+        
+        const lines = csvText.trim().split('\n');
+        if (lines.length < 2) {
+          showMessage('error', 'CSV 內容無效，請確保至少包含標題行與一筆資料');
+          return;
+        }
+        
+        const headers = lines[0].split(',').map(h => h.trim());
+        const expectedHeaders = ['班級', '性別', '姓名', '專長與社團', '有無安親班'];
+        
+        const hasAllHeaders = expectedHeaders.every(eh => headers.includes(eh));
+        if (!hasAllHeaders) {
+          showMessage('error', 'CSV 標題列格式不符，必須為: 班級,性別,姓名,專長與社團,有無安親班');
+          return;
+        }
+
+        try {
+          const publicPath = `artifacts/${appId}/public/data`;
+          const batchPromises = [];
+          
+          for (let i = 1; i < lines.length; i++) {
+            const values = lines[i].split(',').map(v => v.trim());
+            if (values.length !== headers.length) continue;
+            
+            const contestantData = { projectId: selectedProjectId };
+            headers.forEach((h, idx) => { contestantData[h] = values[idx]; });
+            batchPromises.push(addDoc(collection(db, publicPath, 'contestants'), contestantData));
+          }
+          
+          await Promise.all(batchPromises);
+          setCsvText('');
+          showMessage('success', `成功匯入 ${batchPromises.length} 筆參賽者資料！`);
+        } catch (err) {
+          console.error(err);
+          showMessage('error', '匯入失敗');
+        }
+      };
+
+      const handleExport = () => {
+        if (!currentProject || projectContestants.length === 0) {
+          showMessage('error', '目前沒有資料可以匯出');
+          return;
+        }
+
+        const judgeNames = [...new Set(projectSubmissions.map(s => s.judgeName))];
+        let csvContent = "班級,性別,姓名," + judgeNames.join(",") + ",總分,平均\n";
+
+        projectContestants.forEach(contestant => {
+          let row = `${contestant.班級},${contestant.性別},${contestant.姓名}`;
+          let totalScore = 0;
+          let scoreCount = 0;
+
+          judgeNames.forEach(jName => {
+            const sub = projectSubmissions.find(s => s.judgeName === jName);
+            if (sub && sub.scores[contestant.id]) {
+              const score = sub.scores[contestant.id];
+              row += `,${score}`;
+              totalScore += score;
+              scoreCount++;
+            } else {
+              row += `,未評`;
+            }
+          });
+
+          const average = scoreCount > 0 ? (totalScore / scoreCount).toFixed(2) : 0;
+          row += `,${totalScore},${average}\n`;
+          csvContent += row;
+        });
+
+        const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", `${currentProject.title}_成績報表.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      };
+
+      return (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 min-h-[600px] animate-fade-in relative">
+          
+          {/* 全域提示訊息區塊 */}
+          {actionMsg.text && (
+            <div className={`absolute top-4 left-1/2 transform -translate-x-1/2 px-6 py-3 rounded-md shadow-lg z-50 font-bold transition-all ${actionMsg.type === 'error' ? 'bg-red-600 text-white' : 'bg-green-600 text-white'}`}>
+              {actionMsg.text}
+            </div>
+          )}
+
+          <div className="flex border-b border-gray-200">
+            <button 
+              className={`flex-1 py-4 text-center font-bold ${activeTab === 'projects' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}
+              onClick={() => { setActiveTab('projects'); setSelectedProjectId(null); }}
+            >
+              主題管理
+            </button>
+            <button 
+              className={`flex-1 py-4 text-center font-bold ${activeTab === 'judges' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}
+              onClick={() => { setActiveTab('judges'); setSelectedProjectId(null); }}
+            >
+              評審管理
+            </button>
+            <button 
+              className={`flex-1 py-4 text-center font-bold ${activeTab === 'details' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500 hover:bg-gray-50'}`}
+              onClick={() => setActiveTab('details')}
+              disabled={!selectedProjectId}
+            >
+              {selectedProjectId ? '專案細項與報表' : '請先選擇主題'}
+            </button>
+          </div>
+
+          <div className="p-8">
+            {/* Tab 1: 主題管理 */}
+            {activeTab === 'projects' && (
+              <div className="space-y-8">
+                <div className="bg-gray-50 p-6 rounded-lg border border-gray-100">
+                  <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center">
+                    <Plus className="w-5 h-5 mr-1 text-indigo-600" /> 新增評分主題
+                  </h3>
+                  <div className="flex gap-4">
+                    <input 
+                      type="text" 
+                      value={newProjectTitle}
+                      onChange={(e) => setNewProjectTitle(e.target.value)}
+                      placeholder="輸入新的評分主題名稱 (例如：2026全校才藝競賽)"
+                      className="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                    />
+                    <button 
+                      onClick={handleCreateProject}
+                      className="bg-indigo-600 text-white px-6 py-2 rounded-md font-bold hover:bg-indigo-700 transition-colors"
+                    >
+                      建立主題
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900 mb-4">現有評分主題列表</h3>
+                  {sortedProjects.length === 0 ? (
+                    <p className="text-gray-500">目前尚無主題。</p>
+                  ) : (
+                    <div className="overflow-hidden shadow ring-1 ring-black ring-opacity-5 rounded-lg">
+                      <table className="min-w-full divide-y divide-gray-300">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th scope="col" className="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900">主題名稱</th>
+                            <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">建立日期</th>
+                            <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">狀態</th>
+                            <th scope="col" className="relative py-3.5 pl-3 pr-4 sm:pr-6">
+                              <span className="sr-only">管理</span>
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200 bg-white">
+                          {sortedProjects.map(project => (
+                            <tr key={project.id}>
+                              <td className="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900">{project.title}</td>
+                              <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{new Date(project.createdAt).toLocaleDateString('zh-TW')}</td>
+                              <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
+                                <span className="inline-flex rounded-full bg-green-100 px-2 text-xs font-semibold leading-5 text-green-800">開啟中</span>
+                              </td>
+                              <td className="relative whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium sm:pr-6">
+                                <button 
+                                  onClick={() => { setSelectedProjectId(project.id); setActiveTab('details'); }}
+                                  className="text-indigo-600 hover:text-indigo-900 font-bold"
+                                >
+                                  管理與匯入<span className="sr-only">, {project.title}</span>
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Tab 1.5: 評審管理 */}
+            {activeTab === 'judges' && (
+              <div className="space-y-8">
+                <div className="bg-gray-50 p-6 rounded-lg border border-gray-100">
+                  <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center">
+                    <UserPlus className="w-5 h-5 mr-1 text-indigo-600" /> 新增評審帳號
+                  </h3>
+                  <div className="flex gap-4 flex-col sm:flex-row">
+                    <input 
+                      type="text" 
+                      value={newJudgeName}
+                      onChange={(e) => setNewJudgeName(e.target.value)}
+                      placeholder="評審姓名 (例如：王老師)"
+                      className="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                    />
+                    <input 
+                      type="text" 
+                      value={newJudgePassword}
+                      onChange={(e) => setNewJudgePassword(e.target.value)}
+                      placeholder="設定登入密碼 (不可重複)"
+                      className="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                    />
+                    <button 
+                      onClick={handleCreateJudge}
+                      className="bg-indigo-600 text-white px-6 py-2 rounded-md font-bold hover:bg-indigo-700 transition-colors whitespace-nowrap"
+                    >
+                      新增評審
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900 mb-4">現有評審列表 (總計: {judges.length} 位)</h3>
+                  {judges.length === 0 ? (
+                    <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4">
+                      <p className="text-sm text-yellow-700">目前沒有任何評審帳號。請在上方新增，否則評審將無法登入系統打分。</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-hidden shadow ring-1 ring-black ring-opacity-5 rounded-lg">
+                      <table className="min-w-full divide-y divide-gray-300">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th scope="col" className="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900">評審姓名</th>
+                            <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">登入密碼</th>
+                            <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">建立日期</th>
+                            <th scope="col" className="relative py-3.5 pl-3 pr-4 sm:pr-6 text-right">操作</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200 bg-white">
+                          {judges.map(judge => (
+                            <tr key={judge.id}>
+                              <td className="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900">{judge.name}</td>
+                              <td className="whitespace-nowrap px-3 py-4 text-sm font-mono text-indigo-600">{judge.password}</td>
+                              <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
+                                {judge.createdAt ? new Date(judge.createdAt).toLocaleDateString('zh-TW') : '-'}
+                              </td>
+                              <td className="relative whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium sm:pr-6">
+                                <button 
+                                  onClick={() => handleDeleteJudge(judge.id)}
+                                  className="text-red-600 hover:text-red-900 font-bold flex items-center justify-end w-full"
+                                >
+                                  <Trash2 className="w-4 h-4 mr-1" /> 刪除
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Tab 2: 專案細項與匯入 */}
+            {activeTab === 'details' && currentProject && (
+              <div className="space-y-8">
+                <div className="flex justify-between items-center border-b border-gray-100 pb-4">
+                  <h2 className="text-2xl font-bold text-gray-900">專案：{currentProject.title}</h2>
+                  <button 
+                    onClick={handleExport}
+                    className="flex items-center bg-green-600 text-white px-4 py-2 rounded-md font-bold hover:bg-green-700 transition-colors"
+                  >
+                    <Download className="w-4 h-4 mr-2" /> 匯出成績報表
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                  {/* 匯入區塊 */}
+                  <div className="bg-blue-50 p-6 rounded-lg border border-blue-100">
+                    <h3 className="text-lg font-bold text-blue-900 mb-2 flex items-center">
+                      <Upload className="w-5 h-5 mr-1" /> 匯入參賽者資料 (CSV)
+                    </h3>
+                    <p className="text-sm text-blue-700 mb-4">
+                      格式規範：第一行必須為欄位名稱。<br/>
+                      <code className="bg-blue-100 px-1 py-0.5 rounded">班級,性別,姓名,專長與社團,有無安親班</code>
+                    </p>
+                    <textarea
+                      value={csvText}
+                      onChange={(e) => setCsvText(e.target.value)}
+                      className="w-full h-40 p-3 border border-blue-200 rounded-md outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm mb-4"
+                      placeholder="一年甲班,男,王小明,鋼琴,有&#10;二年乙班,女,李小華,舞蹈,無"
+                    ></textarea>
+                    <button 
+                      onClick={handleImportCSV}
+                      className="w-full bg-blue-600 text-white py-2 rounded-md font-bold hover:bg-blue-700 transition-colors"
+                    >
+                      執行匯入
+                    </button>
+                  </div>
+
+                  {/* 統計與預覽區塊 */}
+                  <div>
+                    <h3 className="text-lg font-bold text-gray-900 mb-4">專案現況</h3>
+                    
+                    <div className="grid grid-cols-2 gap-4 mb-6">
+                      <div className="bg-gray-50 p-4 rounded-lg border border-gray-200 text-center">
+                        <div className="text-3xl font-extrabold text-indigo-600">{projectContestants.length}</div>
+                        <div className="text-sm text-gray-500 mt-1">參賽者人數</div>
+                      </div>
+                      <div className="bg-gray-50 p-4 rounded-lg border border-gray-200 text-center">
+                        <div className="text-3xl font-extrabold text-green-600">{projectSubmissions.length}</div>
+                        <div className="text-sm text-gray-500 mt-1">已繳交評審數</div>
+                      </div>
+                    </div>
+
+                    <div className="border border-gray-200 rounded-lg overflow-hidden">
+                      <div className="bg-gray-100 px-4 py-2 text-sm font-bold text-gray-700">已匯入名單預覽 (前5筆)</div>
+                      <ul className="divide-y divide-gray-200 text-sm">
+                        {projectContestants.length === 0 && <li className="p-4 text-gray-500 text-center">尚無資料</li>}
+                        {projectContestants.slice(0, 5).map(c => (
+                          <li key={c.id} className="p-3 flex justify-between">
+                            <span>{c.班級} - {c.姓名}</span>
+                            <span className="text-gray-500">{c.專長與社團 || '無專長'}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // 將 App 掛載到 DOM
+    const root = createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
